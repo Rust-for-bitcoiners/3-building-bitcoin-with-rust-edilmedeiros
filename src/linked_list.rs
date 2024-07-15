@@ -1,6 +1,13 @@
 #![allow(unused)]
-
 // Reference: https://rust-unofficial.github.io/too-many-lists/second.html
+
+use serde::ser::{Serializer, SerializeSeq};
+use serde::de::{Deserializer, Visitor, SeqAccess};
+use serde::{Serialize, Deserialize};
+
+use std::fmt;
+use std::marker::PhantomData;
+
 
 #[derive(Debug, PartialEq)]
 pub struct LinkedList<T> {
@@ -11,6 +18,72 @@ pub struct LinkedList<T> {
 struct Node<T> {
     val: T,
     next: Option<Box<Node<T>>>,
+}
+
+// Serialization
+impl<T> Serialize for LinkedList<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for item in self.iter() {
+            seq.serialize_element(item)?;
+        }
+        seq.end()
+    }
+}
+
+// Deserialization
+struct MyListVisitor<T> {
+    marker: PhantomData<fn() -> LinkedList<T>>
+}
+
+impl<T> MyListVisitor<T> {
+    fn new() -> Self {
+        MyListVisitor {
+            marker: PhantomData
+        }
+    }
+}
+
+impl<'de, T> Visitor<'de> for MyListVisitor<T>
+where
+    T: Deserialize<'de>
+{
+    type Value = LinkedList<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter)
+                 -> fmt:: Result {
+        formatter.write_str("linked list")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>
+    {
+        let mut list = LinkedList::new();
+        while let Some(item) = seq.next_element()? {
+            list.cons(item);
+        }
+        Ok(list.reverse())
+    }
+
+}
+
+impl<'de, T> Deserialize<'de> for LinkedList<T>
+where
+    T: Deserialize<'de>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>
+    {
+        deserializer.deserialize_seq(MyListVisitor::new())
+    }
 }
 
 impl<T> LinkedList<T> {
@@ -50,6 +123,19 @@ impl<T> LinkedList<T> {
         })
     }
 
+    pub fn len(&self) -> usize {
+        let mut len = 0;
+        for _ in self.iter() {
+            len += 1;
+        }
+        len
+    }
+
+    pub fn reverse(self) -> Self {
+        let mut reversed = LinkedList::new();
+        for item in self.into_iter() { reversed.cons(item) }
+        reversed
+    }
 }
 
 
@@ -100,6 +186,14 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
+impl<T> FromIterator<T> for LinkedList<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut list = LinkedList::new();
+        for item in iter { list.cons(item); }
+        list.reverse()
+    }
+}
+
 pub struct IterMut<'a, T> {
     next: Option<&'a mut Node<T>>,
 }
@@ -125,6 +219,26 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_list_serialization() {
+        let mut list: LinkedList<i32> = LinkedList::new();
+        let serialization = serde_json::to_string(&list).unwrap();
+        assert_eq!(serialization, "[]"); // serialize like arrays
+
+        list.cons(1);
+        list.cons(2);
+        list.cons(3);
+        let serialization = serde_json::to_string(&list).unwrap();
+        assert_eq!(serialization, "[3,2,1]"); // serialize like arrays
+
+        // deserialize to vec
+        let vec_deserialization: Vec<i32> = serde_json::from_str(&serialization).unwrap();
+        assert_eq!(vec_deserialization, vec![3,2,1]); // deserialize to vec
+
+        let list_deserialization: LinkedList<i32> = serde_json::from_str(&serialization).unwrap();
+        assert_eq!(list_deserialization, list); // deserialize to list
+    }
 
     #[test]
     fn test_basic_list_api() {
@@ -220,5 +334,17 @@ mod tests {
         assert_eq!(iter.next(), Some(&mut 3));
         assert_eq!(iter.next(), Some(&mut 2));
         assert_eq!(iter.next(), Some(&mut 1));
+    }
+
+    #[test]
+    fn test_len() {
+        let mut list = LinkedList::new();
+        assert_eq!(list.len(), 0);
+
+        list.cons(1);
+        list.cons(2);
+        list.cons(3);
+
+        assert_eq!(list.len(), 3);
     }
 }
